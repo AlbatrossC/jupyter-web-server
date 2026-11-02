@@ -1,0 +1,9 @@
+{
+  "cleanUrls": true,
+  "rewrites": [
+    { "source": "/tree", "destination": "/" },
+    { "source": "/tree/:path*", "destination": "/" },
+    { "source": "/notebooks/:path*", "destination": "/" },
+    { "source": "/edit/:path*", "destination": "/" }
+  ]
+}

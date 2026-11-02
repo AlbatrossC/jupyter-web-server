@@ -1,0 +1,16 @@
+{
+  "default": {
+    "owner": "ruxir-ig",
+    "repo": "cl1",
+    "branch": "main",
+    "root": "CL1"
+  },
+  "hosts": {
+    "cl1.ruchir.dev": {
+      "owner": "ruxir-ig",
+      "repo": "cl1",
+      "branch": "main",
+      "root": "CL1"
+    }
+  }
+}
