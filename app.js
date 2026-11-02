@@ -10,7 +10,7 @@ const textExtensions = new Set(["csv", "json", "txt", "md", "py"]);
 const extensionOf = (path) => (path.includes(".") ? path.split(".").pop().toLowerCase() : "");
 
 function contentUrl(path) {
-  return `/api/content/${encodePath(path)}`;
+  return `/api/content?path=${encodeURIComponent(path)}`;
 }
 
 function fileUrl(path) {

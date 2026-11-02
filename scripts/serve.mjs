@@ -10,10 +10,13 @@ const types = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; ch
 const appRoutes = /^\/(tree|notebooks|edit)(\/|$)/;
 
 createServer(async (request, response) => {
-  const pathname = decodeURIComponent(new URL(request.url, "http://localhost").pathname);
-  if (pathname.startsWith("/api/content/")) {
+  const requestUrl = new URL(request.url, "http://localhost");
+  const pathname = decodeURIComponent(requestUrl.pathname);
+  if (pathname === "/api/content" || pathname.startsWith("/api/content/")) {
     try {
-      const path = pathname.slice("/api/content/".length).split("/");
+      const path = pathname === "/api/content"
+        ? requestUrl.searchParams.get("path")
+        : pathname.slice("/api/content/".length).split("/");
       const upstream = await fetch(contentTarget(path, request.headers.host), {
         method: request.method,
         headers: request.headers.range ? { Range: request.headers.range } : {},
