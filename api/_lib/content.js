@@ -1,58 +1,65 @@
-import { Readable } from "node:stream";
-import sourceMap from "../../content-sources.json" with { type: "json" };
+import { createReadStream, readdirSync, statSync } from "node:fs";
+import { extname, join, relative, resolve, sep } from "node:path";
 
-function safeSegments(value) {
+const contentRoot = resolve(process.cwd(), "content");
+const contentTypes = {
+  ".csv": "text/csv; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".md": "text/markdown; charset=utf-8",
+  ".py": "text/plain; charset=utf-8",
+  ".txt": "text/plain; charset=utf-8",
+};
+
+function resolveContentPath(value) {
   const segments = Array.isArray(value) ? value : String(value ?? "").split("/");
   if (!segments.length || segments.some((part) => !part || part === "." || part === ".." || part.includes("\\") || part.includes("\0"))) {
     throw new Error("Invalid content path");
   }
-  return segments;
+  const path = resolve(contentRoot, ...segments);
+  if (path !== contentRoot && !path.startsWith(`${contentRoot}${sep}`)) throw new Error("Invalid content path");
+  return path;
 }
 
-function safeBranch(branch) {
-  const segments = String(branch ?? "main").split("/");
-  if (!segments.length || segments.some((part) => !part || part === "." || part === "..")) throw new Error("Invalid content branch");
-  return segments.map(encodeURIComponent).join("/");
+function listContentFiles(directory = contentRoot) {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    if (entry.name.startsWith(".") || entry.name === "__pycache__") return [];
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) return listContentFiles(path);
+    if (!entry.isFile()) return [];
+    const file = statSync(path);
+    return [{ path: relative(contentRoot, path).split(sep).join("/"), modified: file.mtime.toISOString(), size: file.size }];
+  }).sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true, sensitivity: "base" }));
 }
 
-export function contentTarget(path, host = "") {
-  const hostname = String(host).split(":")[0].toLowerCase();
-  const source = sourceMap.hosts[hostname] ?? sourceMap.default;
-  if (!source || !/^[\w.-]+$/.test(source.owner) || !/^[\w.-]+$/.test(source.repo)) throw new Error("Content source is not configured");
-  const root = safeSegments(source.root);
-  const file = safeSegments(path);
-  const encodedPath = [...root, ...file].map(encodeURIComponent).join("/");
-  return `https://raw.githubusercontent.com/${encodeURIComponent(source.owner)}/${encodeURIComponent(source.repo)}/${safeBranch(source.branch)}/${encodedPath}`;
-}
-
-export async function proxyContentRequest(req, res, path = req.query?.path) {
+export async function serveContentRequest(req, res, requestedPath = req.query?.path) {
   if (req.method !== "GET" && req.method !== "HEAD") {
     res.setHeader("Allow", "GET, HEAD");
-    res.status(405).end("Method not allowed");
+    res.statusCode = 405;
+    res.end("Method not allowed");
     return;
   }
-  const controller = new AbortController();
-  res.on("close", () => controller.abort());
   try {
-    const target = contentTarget(path, req.headers.host);
-    const headers = {};
-    if (req.headers.range) headers.Range = req.headers.range;
-    const upstream = await fetch(target, { method: req.method, headers, signal: controller.signal });
-    res.statusCode = upstream.status;
-    // fetch() transparently decompresses upstream responses. Forwarding the
-    // upstream Content-Length can then truncate the streamed, decoded body.
-    for (const header of ["content-type", "content-range", "accept-ranges", "etag", "last-modified"]) {
-      const value = upstream.headers.get(header);
-      if (value) res.setHeader(header, value);
+    const path = resolveContentPath(requestedPath);
+    if (path === join(contentRoot, "manifest.json")) {
+      const body = JSON.stringify(listContentFiles());
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.setHeader("Cache-Control", "no-store");
+      if (req.method === "HEAD") res.end();
+      else res.end(body);
+      return;
     }
-    res.setHeader("Cache-Control", "public, s-maxage=120, stale-while-revalidate=600");
-    res.setHeader("X-Content-Type-Options", "nosniff");
-    if (req.method === "HEAD" || !upstream.body) { res.end(); return; }
-    Readable.fromWeb(upstream.body).pipe(res);
+    const file = statSync(path);
+    if (!file.isFile()) throw new Error("Invalid content path");
+    res.statusCode = 200;
+    res.setHeader("Content-Type", contentTypes[extname(path).toLowerCase()] ?? "application/octet-stream");
+    res.setHeader("Content-Length", file.size);
+    res.setHeader("Cache-Control", "public, max-age=120");
+    if (req.method === "HEAD") res.end();
+    else createReadStream(path).pipe(res);
   } catch (error) {
     if (res.headersSent || res.destroyed) return;
-    res.statusCode = error.message === "Invalid content path" ? 400 : 502;
-    res.setHeader("Content-Type", "text/plain; charset=utf-8");
-    res.end(error.message === "Invalid content path" ? "Invalid content path" : "Content source unavailable");
+    res.statusCode = error.message === "Invalid content path" ? 400 : 404;
+    res.end(error.message === "Invalid content path" ? "Invalid content path" : "Content not found");
   }
 }

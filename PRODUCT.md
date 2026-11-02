@@ -6,11 +6,11 @@ product
 
 ## Users
 
-Anyone exploring machine learning and data modeling and visualization notebooks. Visitors need to find an exercise, inspect its code and available datasets, and understand how the subjects are organized.
+Anyone exploring information retrieval and bioinformatics notebooks. Visitors need to find an exercise, inspect its code and available datasets, and understand how the subjects are organized.
 
 ## Product Purpose
 
-Present the ML and DMV exercise collection as a browsable, readable notebook library. Success means visitors can move from a subject to a problem, then read its notebook cells and locate its datasets.
+Present the IR and BIF exercise collection as a browsable, readable notebook library. Success means visitors can move from a subject to a problem, then read its answer files and locate its datasets.
 
 ## Brand Personality
 

@@ -1,5 +1,10 @@
 {
   "cleanUrls": true,
+  "functions": {
+    "api/content.js": {
+      "includeFiles": "content/**"
+    }
+  },
   "rewrites": [
     { "source": "/tree", "destination": "/" },
     { "source": "/tree/:path*", "destination": "/" },

@@ -8,6 +8,7 @@ const baseName = (path) => path.split("/").pop();
 const treeUrl = (path) => (path ? `/tree/${encodePath(path)}` : "/tree");
 const textExtensions = new Set(["csv", "json", "txt", "md", "py"]);
 const extensionOf = (path) => (path.includes(".") ? path.split(".").pop().toLowerCase() : "");
+let localClipboard = "";
 
 function contentUrl(path) {
   return `/api/content?path=${encodeURIComponent(path)}`;
@@ -47,6 +48,14 @@ const icons = {
   copy: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 5.5h8v9h-8Z M10.5 5.5v-4h-8v9h3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>',
   up: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 14V2.5M3 7.5l5-5 5 5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>',
   down: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v11.5M3 8.5l5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>',
+  add: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v12M2 8h12" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>',
+  cut: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="4" r="2" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="4" cy="12" r="2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="m5.5 5.5 8 8M5.5 10.5l8-8" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>',
+  paste: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 2H3v12h10V2h-2M6 1h4v3H6zM5.5 8h5M5.5 11h5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>',
+  run: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 2 10 6-10 6Z" fill="currentColor"/></svg>',
+  stop: '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="3" width="10" height="10" fill="currentColor"/></svg>',
+  restart: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 7a5 5 0 0 1 8.7-2L13 6M13 2v4H9M13 9a5 5 0 0 1-8.7 2L3 10M3 14v-4h4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>',
+  runAll: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m2 2 7 6-7 6Zm6 0 7 6-7 6Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>',
+  keyboard: '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="3" width="13" height="10" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M4 6h.1M7 6h.1M10 6h.1M13 6h.1M4 9h.1M7 9h.1M10 9h.1M5 11h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
 };
 
 function siteHeader(extra = "") {
@@ -252,7 +261,7 @@ function outputMarkup(output) {
 
 function codeBlock(source) {
   const lineCount = source.split("\n").length;
-  return `<div class="input_area"><div class="CodeMirror"><div class="CodeMirror-gutter" aria-hidden="true">${Array.from({ length: lineCount }, (_, index) => index + 1).join("\n")}</div><pre class="CodeMirror-code">${highlightPython(source)}</pre></div></div>`;
+  return `<div class="input_area"><div class="CodeMirror"><div class="CodeMirror-gutter" aria-hidden="true">${Array.from({ length: lineCount }, (_, index) => index + 1).join("\n")}</div><pre class="CodeMirror-code" contenteditable="true" spellcheck="false" aria-label="Code cell source">${highlightPython(source)}</pre></div></div>`;
 }
 
 function cellMarkup(cell, index, directory) {
@@ -273,9 +282,9 @@ function toPythonScript(notebook) {
   return `${parts.join("\n\n")}\n`;
 }
 
-function downloadText(text, filename) {
+function downloadText(text, filename, type = "text/x-python") {
   const link = document.createElement("a");
-  link.href = URL.createObjectURL(new Blob([text], { type: "text/x-python" }));
+  link.href = URL.createObjectURL(new Blob([text], { type }));
   link.download = filename;
   link.click();
   URL.revokeObjectURL(link.href);
@@ -283,6 +292,7 @@ function downloadText(text, filename) {
 
 function flashNotification(message) {
   const widget = document.querySelector("#notification");
+  if (!widget) return;
   widget.textContent = message;
   widget.hidden = false;
   window.clearTimeout(flashNotification.timer);
@@ -297,6 +307,11 @@ function viewActions() {
   };
 }
 
+function markUnsaved() {
+  const status = document.querySelector(".checkpoint_status");
+  if (status) status.textContent = "Unsaved changes";
+}
+
 async function notebookView(manifest, path) {
   const entry = manifest.find((file) => file.path === path);
   if (!entry || extensionOf(path) !== "ipynb") return notFound();
@@ -308,20 +323,24 @@ async function notebookView(manifest, path) {
       ${siteHeader(`<span id="save_widget"><span id="notebook_name">${escapeHTML(name)}</span><span class="checkpoint_status" title="${escapeHTML(new Date(entry.modified).toLocaleString())}">Last Checkpoint: ${escapeHTML(timeAgo(entry.modified))}</span></span>`)}
       <div id="menubar-container" class="container">
         ${menubar([
-          ["File", [{ label: "Open...", href: treeUrl(directory) }, "-", { label: "Download as Notebook (.ipynb)", href: fileHref, download: true }, { label: "Download as Python (.py)", action: "downloadPython" }]],
+          ["File", [{ label: "Open...", href: treeUrl(directory) }, "-", { label: "Download as Notebook (.ipynb)", action: "saveNotebook" }, { label: "Download as Python (.py)", action: "downloadPython" }]],
           ["Edit", [{ label: "Copy Cells", action: "copyCell" }, "-", { label: "Select Previous Cell", action: "selectPrevious" }, { label: "Select Next Cell", action: "selectNext" }]],
           ["View", [{ label: "Toggle Header", action: "toggleHeader" }, { label: "Toggle Toolbar", action: "toggleToolbar" }, { label: "Toggle Line Numbers", action: "toggleLineNumbers" }]],
-          ["Insert"],
-          ["Cell", [{ label: "Toggle Current Output", action: "toggleOutput" }, { label: "Toggle All Output", action: "toggleAllOutput" }]],
-          ["Kernel"],
+          ["Insert", [{ label: "Insert Cell Above", action: "insertAbove" }, { label: "Insert Cell Below", action: "insertBelow" }]],
+          ["Cell", [{ label: "Run Cell", action: "runCell" }, { label: "Toggle Current Output", action: "toggleOutput" }, { label: "Toggle All Output", action: "toggleAllOutput" }]],
+          ["Kernel", [{ label: "Interrupt Kernel", action: "interruptKernel" }, { label: "Restart Kernel", action: "restartKernel" }, { label: "Restart and Run All", action: "runAll" }]],
           ["Widgets"],
           ["Help", [{ label: "Markdown", href: "https://help.github.com/articles/markdown-basics/", external: true }, "-", { label: "Python", href: "https://docs.python.org/3/", external: true }, { label: "NumPy", href: "https://numpy.org/doc/stable/", external: true }, { label: "Matplotlib", href: "https://matplotlib.org/stable/contents.html", external: true }, { label: "pandas", href: "https://pandas.pydata.org/docs/", external: true }, { label: "scikit-learn", href: "https://scikit-learn.org/stable/", external: true }]],
-        ], `<span id="notification" class="notification_widget" role="status" hidden></span><span class="notification_widget readonly">Read Only</span><span class="kernel_indicator_name"></span><span class="kernel_indicator" title="Kernel Idle" aria-label="Kernel Idle"></span>`)}
+        ], `<span id="notification" class="notification_widget" role="status" hidden></span><span class="kernel_indicator_name"></span><span class="kernel_indicator" title="Kernel Idle" aria-label="Kernel Idle"></span>`)}
         <div id="maintoolbar" role="toolbar" aria-label="Notebook toolbar">
-          <div class="btn-group"><a class="btn" href="${fileHref}" download title="Download notebook">${icons.save}</a></div>
+          <div class="btn-group"><button class="btn" type="button" data-action="saveNotebook" title="Save notebook">${icons.save}</button></div>
+          <div class="btn-group"><button class="btn" type="button" data-action="insertAbove" title="Insert cell above">${icons.add}</button><button class="btn" type="button" data-action="cutCell" title="Cut cell">${icons.cut}</button></div>
           <div class="btn-group"><button class="btn" type="button" data-action="copyCell" title="copy selected cells">${icons.copy}</button></div>
-          <div class="btn-group"><button class="btn" type="button" data-action="selectPrevious" title="select cell above">${icons.up}</button><button class="btn" type="button" data-action="selectNext" title="select cell below">${icons.down}</button></div>
-          <div class="btn-group"><select id="cell_type" class="form-control" disabled aria-label="Cell type"><option value="code">Code</option><option value="markdown">Markdown</option><option value="raw">Raw NBConvert</option></select></div>
+          <div class="btn-group"><button class="btn" type="button" data-action="pasteCell" title="Paste cell">${icons.paste}</button></div>
+          <div class="btn-group"><button class="btn" type="button" data-action="moveUp" title="Move cell up">${icons.up}</button><button class="btn" type="button" data-action="moveDown" title="Move cell down">${icons.down}</button></div>
+          <div class="btn-group"><button class="btn" type="button" data-action="runCell" title="Run cell">${icons.run}<span class="btn-label">Run</span></button><button class="btn" type="button" data-action="interruptKernel" title="Interrupt kernel">${icons.stop}</button><button class="btn" type="button" data-action="restartKernel" title="Restart kernel">${icons.restart}</button><button class="btn" type="button" data-action="runAll" title="Restart and run all cells">${icons.runAll}</button></div>
+          <div class="btn-group"><select id="cell_type" class="form-control" aria-label="Cell type"><option value="code">Code</option><option value="markdown">Markdown</option><option value="raw">Raw NBConvert</option></select></div>
+          <div class="btn-group"><button class="btn" type="button" data-action="keyboardHelp" title="Keyboard shortcuts">${icons.keyboard}</button></div>
         </div>
       </div>
     </header>
@@ -330,6 +349,8 @@ async function notebookView(manifest, path) {
 
   let notebook;
   let selected = 0;
+  let clipboardCell = null;
+  let container;
   const cells = () => [...document.querySelectorAll("#notebook-container .cell")];
   const select = (index, focus = true) => {
     const list = cells();
@@ -339,17 +360,74 @@ async function notebookView(manifest, path) {
     document.querySelector("#cell_type").value = list[selected].dataset.type;
     if (focus) { list[selected].focus({ preventScroll: true }); list[selected].scrollIntoView({ block: "nearest" }); }
   };
+  const renderCells = (index = selected) => {
+    if (!notebook || !container) return;
+    notebook.cells ??= [];
+    if (!notebook.cells.length) notebook.cells.push({ cell_type: "code", source: "", metadata: {}, outputs: [], execution_count: null });
+    container.innerHTML = notebook.cells.map((cell, position) => cellMarkup(cell, position, directory)).join("");
+    selected = Math.max(0, Math.min(index, notebook.cells.length - 1));
+    select(selected, false);
+  };
+  const insertCell = (index) => {
+    if (!notebook) return;
+    const cellType = document.querySelector("#cell_type")?.value ?? "code";
+    notebook.cells.splice(index, 0, { cell_type: cellType, source: "", metadata: {}, outputs: [], execution_count: null });
+    markUnsaved();
+    renderCells(index);
+    document.querySelector(".cell.selected .CodeMirror-code")?.focus();
+  };
+  const moveCell = (offset) => {
+    if (!notebook) return;
+    const destination = selected + offset;
+    if (destination < 0 || destination >= notebook.cells.length) return;
+    [notebook.cells[selected], notebook.cells[destination]] = [notebook.cells[destination], notebook.cells[selected]];
+    markUnsaved();
+    renderCells(destination);
+  };
 
   setupMenus({
     ...viewActions(),
     downloadPython: () => notebook && downloadText(toPythonScript(notebook), `${name}.py`),
+    saveNotebook: () => {
+      if (!notebook) return;
+      downloadText(JSON.stringify(notebook, null, 2), `${name}.ipynb`, "application/x-ipynb+json");
+      const status = document.querySelector(".checkpoint_status");
+      if (status) status.textContent = "Downloaded just now";
+    },
+    insertAbove: () => insertCell(selected),
+    insertBelow: () => insertCell(selected + 1),
+    cutCell: async () => {
+      if (!notebook?.cells?.length) return;
+      clipboardCell = structuredClone(notebook.cells[selected]);
+      localClipboard = join(clipboardCell.source);
+      try { await navigator.clipboard.writeText(join(clipboardCell.source)); } catch { /* local cell clipboard remains available */ }
+      notebook.cells.splice(selected, 1);
+      markUnsaved();
+      renderCells(Math.min(selected, notebook.cells.length - 1));
+    },
     copyCell: async () => {
       if (!notebook) return;
-      try { await navigator.clipboard.writeText(join(notebook.cells[selected].source)); flashNotification("Copied cell"); }
-      catch { flashNotification("Copy failed"); }
+      clipboardCell = structuredClone(notebook.cells[selected]);
+      localClipboard = join(clipboardCell.source);
+      try { await navigator.clipboard.writeText(join(clipboardCell.source)); } catch { /* local cell clipboard remains available */ }
+      flashNotification("Cell copied");
+    },
+    pasteCell: () => {
+      if (!notebook || (!clipboardCell && !localClipboard)) return flashNotification("Copy a cell first");
+      const pasted = clipboardCell ? structuredClone(clipboardCell) : { cell_type: "code", source: localClipboard, metadata: {}, outputs: [], execution_count: null };
+      notebook.cells.splice(selected + 1, 0, pasted);
+      markUnsaved();
+      renderCells(selected + 1);
     },
     selectPrevious: () => select(selected - 1),
     selectNext: () => select(selected + 1),
+    moveUp: () => moveCell(-1),
+    moveDown: () => moveCell(1),
+    runCell: () => flashNotification("No kernel is connected"),
+    interruptKernel: () => flashNotification("No active kernel"),
+    restartKernel: () => flashNotification("No active kernel"),
+    runAll: () => flashNotification("No kernel is connected"),
+    keyboardHelp: () => flashNotification("Use J and K to move between cells"),
     toggleOutput: () => cells()[selected]?.querySelector(".output_wrapper")?.classList.toggle("is-collapsed"),
     toggleAllOutput: () => {
       const wrappers = [...document.querySelectorAll(".output_wrapper")];
@@ -363,13 +441,31 @@ async function notebookView(manifest, path) {
     if (!response.ok) throw new Error(`Notebook request returned ${response.status}.`);
     notebook = await response.json();
     document.querySelector(".kernel_indicator_name").textContent = notebook.metadata?.kernelspec?.display_name ?? "Python 3 (ipykernel)";
-    const container = document.querySelector("#notebook-container");
-    container.innerHTML = (notebook.cells ?? []).map((cell, index) => cellMarkup(cell, index, directory)).join("") || '<div class="cell"><div class="prompt"></div><div class="inner_cell"></div></div>';
+    container = document.querySelector("#notebook-container");
+    notebook.cells ??= [];
+    renderCells(0);
     container.addEventListener("click", (event) => {
       const cell = event.target.closest(".cell");
       if (cell) select(Number(cell.dataset.index), false);
     });
-    select(0, false);
+    container.addEventListener("input", (event) => {
+      const editor = event.target.closest(".CodeMirror-code[contenteditable='true']");
+      if (!editor) return;
+      const cell = editor.closest(".cell");
+      if (!cell) return;
+      const modelCell = notebook.cells[Number(cell.dataset.index)];
+      modelCell.source = editor.innerText.replace(/\r/g, "");
+      modelCell.outputs = [];
+      modelCell.execution_count = null;
+      cell.querySelector(".output_wrapper")?.remove();
+      markUnsaved();
+    });
+    document.querySelector("#cell_type").addEventListener("change", (event) => {
+      notebook.cells[selected].cell_type = event.target.value;
+      if (event.target.value === "code") notebook.cells[selected].outputs = [];
+      markUnsaved();
+      renderCells(selected);
+    });
   } catch (error) {
     document.querySelector("#notebook-container").innerHTML = `<div class="notebook-error" role="alert"><h2>Error loading notebook</h2><p>${escapeHTML(error.message)}</p></div>`;
   }
@@ -377,6 +473,7 @@ async function notebookView(manifest, path) {
 
   document.addEventListener("keydown", (event) => {
     const target = event.target instanceof Element ? event.target : document.body;
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); document.querySelector('[data-action="saveNotebook"]')?.click(); return; }
     if (target.closest("input, select, textarea, .menu") || event.metaKey || event.ctrlKey || event.altKey) return;
     const onCell = target.closest(".cell");
     if (event.key === "j" || (onCell && event.key === "ArrowDown")) { event.preventDefault(); select(selected + 1); }
@@ -392,20 +489,77 @@ async function editView(manifest, path) {
   if (!entry || !textExtensions.has(extensionOf(path))) return notFound();
   const fileHref = contentUrl(path);
   const mode = { json: "JSON", py: "Python", md: "Markdown" }[extensionOf(path)] ?? "Plain Text";
+  let source = "";
   document.body.className = "page-edit show-line-numbers";
   render(`<header id="header">
       ${siteHeader(`<span id="save_widget"><span id="notebook_name">${escapeHTML(baseName(path))}</span><span class="checkpoint_status" title="${escapeHTML(new Date(entry.modified).toLocaleString())}">Last Checkpoint: ${escapeHTML(timeAgo(entry.modified))}</span></span>`)}
       <div id="menubar-container" class="container">
         ${menubar([
-          ["File", [{ label: "Open...", href: treeUrl(parentOf(path)) }, "-", { label: "Download", href: fileHref, download: true }]],
-          ["Edit"],
+          ["File", [{ label: "Open...", href: treeUrl(parentOf(path)) }, "-", { label: "Download", action: "saveFile" }]],
+          ["Edit", [{ label: "Cut", action: "cutFile" }, { label: "Copy", action: "copyFile" }, { label: "Paste", action: "pasteFile" }]],
           ["View", [{ label: "Toggle Header", action: "toggleHeader" }, { label: "Toggle Line Numbers", action: "toggleLineNumbers" }]],
-          ["Language"],
-        ], `<span class="notification_widget readonly">Read Only</span><span class="mode_indicator">${mode}</span>`)}
+          ["Insert", [{ label: "Insert Cell Above", action: "insertLine" }, { label: "Insert Cell Below", action: "insertLine" }]],
+          ["Cell", [{ label: "Run Cell", action: "runCell" }, { label: "Run All", action: "runAll" }]],
+          ["Kernel", [{ label: "Interrupt Kernel", action: "interruptKernel" }, { label: "Restart Kernel", action: "restartKernel" }]],
+          ["Widgets"],
+          ["Help", [{ label: "Python", href: "https://docs.python.org/3/", external: true }]],
+        ], `<span id="notification" class="notification_widget" role="status" hidden></span><span class="mode_indicator">${mode}</span><span class="kernel_indicator" title="Kernel Idle" aria-label="Kernel Idle"></span>`)}
       </div>
+      <div class="container"><div id="maintoolbar" role="toolbar" aria-label="File toolbar">
+        <div class="btn-group"><button class="btn" type="button" data-action="saveFile" title="Save file">${icons.save}</button></div>
+        <div class="btn-group"><button class="btn" type="button" data-action="insertLine" title="Insert line">${icons.add}</button><button class="btn" type="button" data-action="cutFile" title="Cut selection or code">${icons.cut}</button><button class="btn" type="button" data-action="copyFile" title="Copy selection or code">${icons.copy}</button><button class="btn" type="button" data-action="pasteFile" title="Paste">${icons.paste}</button></div>
+        <div class="btn-group"><button class="btn" type="button" data-action="moveCaretUp" title="Move up">${icons.up}</button><button class="btn" type="button" data-action="moveCaretDown" title="Move down">${icons.down}</button></div>
+        <div class="btn-group"><button class="btn" type="button" data-action="runCell" title="Run cell">${icons.run}<span class="btn-label">Run</span></button><button class="btn" type="button" data-action="interruptKernel" title="Interrupt kernel">${icons.stop}</button><button class="btn" type="button" data-action="restartKernel" title="Restart kernel">${icons.restart}</button><button class="btn" type="button" data-action="runAll" title="Restart and run all cells">${icons.runAll}</button></div>
+        <div class="btn-group"><select id="cell_type" class="form-control" aria-label="Cell type"><option>Code</option><option>Markdown</option><option>Raw</option></select></div>
+        <div class="btn-group"><button class="btn" type="button" data-action="keyboardHelp" title="Keyboard shortcuts">${icons.keyboard}</button></div>
+      </div></div>
     </header>
     <div id="site"><main id="texteditor-container" class="container"><div class="notebook-loading">Loading…</div></main></div>`, `${baseName(path)} - Jupyter Text Editor`);
-  setupMenus(viewActions());
+  const editorElement = () => document.querySelector("#texteditor-container .CodeMirror-code");
+  const pasteIntoEditor = (text) => {
+    const editor = editorElement();
+    if (!editor) return;
+    editor.focus();
+    const selection = window.getSelection();
+    const inEditor = selection?.rangeCount && editor.contains(selection.anchorNode);
+    if (inEditor && document.execCommand("insertText", false, text)) return;
+    source = `${source}${text}`;
+    editor.innerHTML = extensionOf(path) === "py" ? highlightPython(source) : escapeHTML(source);
+    editor.dispatchEvent(new InputEvent("input", { bubbles: true }));
+  };
+  const copyFromEditor = async (cut = false) => {
+    const editor = editorElement();
+    if (!editor) return;
+    const selection = window.getSelection();
+    const selectedText = selection?.toString() ?? "";
+    localClipboard = selectedText || editor.innerText;
+    try { await navigator.clipboard.writeText(localClipboard); } catch { /* local clipboard remains available */ }
+    if (cut) {
+      if (selectedText) { document.execCommand("delete"); return; }
+      source = "";
+      editor.textContent = "";
+      editor.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    } else flashNotification("Copied");
+  };
+  setupMenus({
+    ...viewActions(),
+    saveFile: () => {
+      downloadText(source, baseName(path), extensionOf(path) === "py" ? "text/x-python" : "text/plain");
+      const status = document.querySelector(".checkpoint_status");
+      if (status) status.textContent = "Downloaded just now";
+    },
+    copyFile: () => copyFromEditor(false),
+    cutFile: () => copyFromEditor(true),
+    pasteFile: () => localClipboard ? pasteIntoEditor(localClipboard) : flashNotification("Copy text first"),
+    insertLine: () => pasteIntoEditor("\n"),
+    moveCaretUp: () => { editorElement()?.focus(); window.getSelection()?.modify?.("move", "backward", "line"); },
+    moveCaretDown: () => { editorElement()?.focus(); window.getSelection()?.modify?.("move", "forward", "line"); },
+    runCell: () => flashNotification("No kernel is connected"),
+    interruptKernel: () => flashNotification("No active kernel"),
+    restartKernel: () => flashNotification("No active kernel"),
+    runAll: () => flashNotification("No kernel is connected"),
+    keyboardHelp: () => flashNotification("Use Ctrl+S to download your changes"),
+  });
 
   const container = document.querySelector("#texteditor-container");
   try {
@@ -425,8 +579,20 @@ async function editView(manifest, path) {
     if (entry.size > text.length) lines.pop();
     lines = lines.slice(0, PREVIEW_LINES);
     if (lines.at(-1) === "") lines.pop();
-    const source = lines.join("\n");
-    container.innerHTML = `<div class="CodeMirror editor"><div class="CodeMirror-gutter" aria-hidden="true">${lines.map((_, index) => index + 1).join("\n")}</div><pre class="CodeMirror-code">${extensionOf(path) === "py" ? highlightPython(source) : escapeHTML(source)}</pre></div>${truncated ? `<p class="truncated-note">Showing the first ${lines.length.toLocaleString()} lines. <a href="${fileHref}" download>Download the full file</a> (${escapeHTML(fileSize(entry.size))}).</p>` : ""}`;
+    source = lines.join("\n");
+    container.innerHTML = `<div class="CodeMirror editor"><div class="CodeMirror-gutter" aria-hidden="true">${lines.map((_, index) => index + 1).join("\n")}</div><pre class="CodeMirror-code" contenteditable="true" spellcheck="false" aria-label="${escapeHTML(baseName(path))} source">${extensionOf(path) === "py" ? highlightPython(source) : escapeHTML(source)}</pre></div>${truncated ? `<p class="truncated-note">Showing the first ${lines.length.toLocaleString()} lines. <a href="${fileHref}" download>Download the full file</a> (${escapeHTML(fileSize(entry.size))}).</p>` : ""}`;
+    editorElement().addEventListener("input", (event) => {
+      source = event.currentTarget.innerText.replace(/\r/g, "");
+      const gutter = container.querySelector(".CodeMirror-gutter");
+      gutter.textContent = Array.from({ length: source.split("\n").length }, (_, index) => index + 1).join("\n");
+      markUnsaved();
+    });
+    document.querySelector("#cell_type").addEventListener("change", (event) => {
+      document.querySelector(".mode_indicator").textContent = event.target.value;
+    });
+    document.addEventListener("keydown", (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); document.querySelector('[data-action="saveFile"]')?.click(); }
+    });
   } catch (error) {
     container.innerHTML = `<div class="notebook-error" role="alert"><h2>Error loading file</h2><p>${escapeHTML(error.message)}</p></div>`;
   }
