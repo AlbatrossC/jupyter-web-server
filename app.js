@@ -438,7 +438,7 @@ async function start() {
   const path = rest.join("/");
   let manifest;
   try {
-    const response = await fetch("/api/content/manifest.json");
+    const response = await fetch(contentUrl("manifest.json"));
     if (!response.ok) throw new Error(`Manifest request returned ${response.status}.`);
     manifest = await response.json();
   } catch (error) {
